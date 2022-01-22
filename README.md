@@ -26,6 +26,9 @@ Spotify also assigns each song a popularity score, based on total number of clic
 
 ![image](https://user-images.githubusercontent.com/60556766/150615211-3b1ab70f-8087-48f3-a425-17d9550d2ce2.png)
 
+![image](https://user-images.githubusercontent.com/60556766/150615304-3862ce40-7415-47a2-88ed-c0cc6f5743cb.png)
+
+
 
 ## Roadmap
 
@@ -33,6 +36,23 @@ Spotify also assigns each song a popularity score, based on total number of clic
 - Exploratory Data Analysis
 - Linear Regression to predict popularity score
 - Logistic Regression to predict popular/not popular
+
+## Model Built
+
+- Linear Regression:
+
+![image](https://user-images.githubusercontent.com/60556766/150615391-4e06b028-78ab-4769-9883-fefbd562b0cc.png)
+
+
+- Regression Tree:
+
+![image](https://user-images.githubusercontent.com/60556766/150615418-a52d3e68-a2d2-454e-b2f9-687a235e757e.png)
+![image](https://user-images.githubusercontent.com/60556766/150615428-bbcd0edf-c51a-4fb2-bd0d-6a2650bcc401.png)
+
+- Multilayer Perceptron:
+
+![image](https://user-images.githubusercontent.com/60556766/150615464-e4e606a9-40a2-45b1-b51e-3f2af144b30d.png)
+
 
 
 
