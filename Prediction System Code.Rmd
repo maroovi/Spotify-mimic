@@ -1,0 +1,1180 @@
+---
+title: "Spotify Project"
+output:
+  html_document:
+    df_print: paged
+  pdf_document: default
+---
+
+# Setup
+```{r echo=TRUE, message=FALSE, warning=FALSE, paged.print=FALSE}
+# attach libraries
+library(tidyverse)
+library(dplyr)
+library(car)
+library(corrplot)
+library(RColorBrewer)
+library(PerformanceAnalytics)
+library(psych)
+library(MASS)
+library(rpart)
+library(rattle)
+library(rpart.plot)
+library(FNN)
+library(caret)
+library(neuralnet)
+library(GGally)
+library(RSNNS)
+library(nnet)
+library(devtools)
+
+
+# load the dataset
+load(file = "spotify.RData")
+
+# df is the original big dataset 
+# df60 ~ df10 are  the relatively small datasets without the feature "popularity" 
+```
+
+# Dataset Selection Attempt:  
+
+#### Obtain the "popularity" for the records in the small dataset from the big dataset  
+#### (merged by track id)
+```{r}
+uri <- str_split_fixed(df00$uri, ":", 3)
+uri <- uri[,3]
+df00$uri <- uri
+test00 <- merge(df00, df, by.x = "uri", by.y = "track_id", all.x = TRUE, 
+                all.y = FALSE) %>% na.omit()
+
+uri <- str_split_fixed(df10$uri, ":", 3)
+uri <- uri[,3]
+df10$uri <- uri
+test10 <- merge(df10, df, by.x = "uri", by.y = "track_id", all.x = TRUE, 
+                all.y = FALSE) %>% na.omit()
+
+uri <- str_split_fixed(df60$uri, ":", 3)
+uri <- uri[,3]
+df60$uri <- uri
+test60 <- merge(df60, df, by.x = "uri", by.y = "track_id", all.x = TRUE, 
+                all.y = FALSE) %>% na.omit()
+
+uri <- str_split_fixed(df70$uri, ":", 3)
+uri <- uri[,3]
+df70$uri <- uri
+test70 <- merge(df70, df, by.x = "uri", by.y = "track_id", all.x = TRUE, 
+                all.y = FALSE) %>% na.omit()
+
+uri <- str_split_fixed(df80$uri, ":", 3)
+uri <- uri[,3]
+df80$uri <- uri
+test80 <- merge(df80, df, by.x = "uri", by.y = "track_id", all.x = TRUE, 
+                all.y = FALSE) %>% na.omit()
+
+uri <- str_split_fixed(df90$uri, ":", 3)
+uri <- uri[,3]
+df90$uri <- uri
+test90 <- merge(df90, df, by.x = "uri", by.y = "track_id", all.x = TRUE, 
+                all.y = FALSE) %>% na.omit()
+
+test <- rbind(test00, test10, test60, test70, test80, test90)
+test <- test[,-(20:34)]
+
+nrow(test)
+
+nrow(df00) + nrow(df10) + nrow(df60) + nrow(df70) + nrow(df80) + nrow(df90)
+
+nrow(df)
+```
+
+#### Problem Spotted:  
+#### The number of matching tracks is only 552, while the number of records in the hit track set is 41106 and the number of records in the original big dataset is 130663. Since the track id is distinct for each track, I started to doubt the credibility of the datasets that we obtained. Simply speaking, how to explain the low matching tracks? If we have to choose a dataset to proceed with modeling, which one to choose and why??  
+
+#### Solution:   
+#### Trace back to the source of the dataset and see how they are collected      
+##### The original dataset:  
+https://github.com/tgel0/spotify-data/blob/master/notebooks/SpotifyDataRetrieval.ipynb  
+Pro: The data extraction process is simple and straightforward. The features of the sound tracks have not been processed after extracted from Spotify API, which kept the data's authenticity. The feature "popularity" can serve as the response variable in a prediction problem.
+
+Con: There is no feature related to release date. The data volume is huge and requires much work in pre-processing.
+
+##### The small dataset:
+https://github.com/fortyTwo102/hitpredictor-decade-util/tree/master/Database  
+
+Pro: The data volume is relatively small, which will benefit the future modeling process. The sound tracks are classified into 6 subsets based on releasing date.
+
+Con: The data is highly processed after extracted from the Spotify API. After the pre-processing steps, a binary feature "target" is added as the response variable. '1' implies that this song has featured in the Billboards weekly hit list. '0' Implies that the track is a 'flop'. I assume that such level of pre-processing will bring in the data collector's subjective view to the dataset, which may further mislead our modeling process.
+
+#### Now which one to pick?
+
+
+# We decide to go with the big dataset for its volume and diversity.
+
+
+
+
+# Data Exploration
+
+## Numeric Variable Distribution and Preprocessing
+
+```{r}
+# df_num: numerical variables in df
+# we don't need artist name, track id, track name anyways
+df_num <- df[4:17]
+
+# build histogram matrix
+multi.hist(df_num)
+
+# get rid of songs with abosolute 0 popularity
+df_num <- df_num %>% filter(popularity > 0)
+
+# build histogram matrix
+multi.hist(df_num)
+
+```
+
+
+
+## Correlation Matrix   
+
+Some correlation between variables is spotted but it's not extreme.
+There is no correlation coefficient larger than 0.75 or smaller than -0.75.
+We can leave it as it is now.
+
+```{r}
+M <-cor(df_num, method = "pearson", use = "pairwise.complete.obs")
+corrplot(M, type="upper", order="hclust",
+         col=brewer.pal(n=8, name="RdYlBu"))
+```
+
+
+
+## Explore the variable "artist_name"
+
+```{r}
+df %>% group_by(artist_name) %>% 
+  summarise(artist_popularity = sum(popularity)/n()) %>%
+  arrange(desc(artist_popularity))
+
+# define: artist_popularity = sum of popularity / number of songs
+```
+
+
+
+## Possible ways to reduce the data range:  
+
+We may need to do this after exploring all the modeling method.
+
+1. Only include the tracks from the current top 100 most popular music artists (or some other genre like rap/hip-hop) 
+https://www.songkick.com/leaderboards/popular_artists  
+
+```{r}
+# naive model with top 5 artists
+df_sub <- df %>% filter(artist_name == "Rihanna" | artist_name == "Coldplay" |
+                          artist_name == "Drake" | artist_name == "Eminem" |
+                          artist_name == "Maroon 5" )
+
+fit <- lm(data = df_sub, popularity ~ acousticness + danceability + duration_ms +
+            energy +
+            instrumentalness + key + liveness + loudness + mode + speechiness +
+            tempo + time_signature + valence)
+
+summary(fit)
+# Result is not bad!
+```
+
+2. Filter the records using one of the features  
+For example, select the tracks with danceability >= 0.95 and model with those tracks    
+```{r}
+# naive model with 1000 tracks with highest dancability
+df_sub <- df %>% arrange(desc(danceability)) %>% head(1000)
+
+fit <- lm(data = df_sub, popularity ~ acousticness + danceability + duration_ms +
+            energy +
+            instrumentalness + key + liveness + loudness + mode + speechiness +
+            tempo + time_signature + valence)
+
+summary(fit)
+# Result is not bad either!
+```
+
+
+
+*****
+
+
+*****
+
+
+
+
+
+# Prediction Modeling
+
+## Data Partition
+
+
+```{r}
+
+set.seed(12345)
+
+# Create random training, validation, and test sets
+
+fractionTraining   <- 0.50
+fractionValidation <- 0.30
+fractionTest       <- 0.20
+
+# Compute sample sizes
+sampleSizeTraining   <- floor(fractionTraining   * nrow(df_num))
+sampleSizeValidation <- floor(fractionValidation * nrow(df_num))
+sampleSizeTest       <- floor(fractionTest       * nrow(df_num))
+
+# Create the randomly-sampled indices for the dataframe
+indicesTraining    <- sort(sample(seq_len(nrow(df_num)), size=sampleSizeTraining))
+indicesNotTraining <- setdiff(seq_len(nrow(df_num)), indicesTraining)
+indicesValidation  <- sort(sample(indicesNotTraining, size=sampleSizeValidation))
+indicesTest        <- setdiff(indicesNotTraining, indicesValidation)
+
+# Output the three dataframes for training, validation and test.
+dfTraining   <- df_num[indicesTraining, ]
+dfValidation <- df_num[indicesValidation, ]
+dfTest       <- df_num[indicesTest, ]
+```
+
+
+
+
+
+
+
+
+
+## 1. Linear Regression
+
+### Build a naive model to test the feasibility  
+
+The test is significant (p-value<2.2e-16) with a extremely low R2 value (0.09954)  
+
+The low R2 value is due to the extreme variance existing in the dataset. It was expected since people's taste on music is highly subjective. 
+
+```{r}
+fit <- lm(data = df_num, popularity ~ .)
+
+summary(fit)
+
+plot(fit)
+
+hist(fit$residuals)
+
+```
+
+
+
+### Stepwise Selection on naive model
+
+
+```{r}
+# stepwise selection
+step(fit, test = "F")
+
+fit_step <- lm(data = df_num, popularity ~ danceability + duration_ms + energy +
+                 instrumentalness + liveness + loudness + mode + speechiness +
+                 time_signature + valence)
+summary(fit_step)
+
+hist(fit_step$residuals)
+
+# residual plot
+plot(fit_step)
+
+# severe outliers spotted
+
+# check fitted values
+hist(fit_step$fitted.values)
+# Why the fitted values all so small (<40)??
+
+```
+
+
+
+### Outlier exploration
+
+```{r}
+# Any improvement if we get rid of outliers in response variable?
+
+# draw boxplot
+boxplot(df_num$popularity)
+
+# compute upper whisker of the boxplot
+df_q <- quantile(df_num$popularity)     
+IQR <- df_q[4] - df_q[2]
+upper <- df_q[4] + 1.5 * as.numeric(IQR)
+
+# eliminate outliers above upper whisker
+df_num_no <- df_num %>% filter(popularity <= upper)
+hist(df_num_no$popularity)
+
+# fit a naive model
+fit <- lm(data = df_num_no, popularity ~ acousticness + danceability + duration_ms + energy + instrumentalness + key + liveness + loudness + mode + speechiness + tempo + time_signature + valence)
+
+summary(fit)
+
+hist(fit$fitted.values)
+
+# stepwise selection
+step(fit, test = "F")
+
+fit <- lm(data = df_num_no, popularity ~ danceability + duration_ms + energy + instrumentalness + liveness + loudness + mode + speechiness + time_signature + valence)
+
+summary(fit)
+
+# There is no improvement because this is not the proper way to get rid of outliers.
+# The proper way should be identifying the outliers using cook's distance.
+# Now we will focus more on settling with a decent model.
+# After picking the model, we will deal with the outliers.
+
+```
+
+
+
+### Adding polynomial terms and interaction terms
+```{r}
+# try adding polynomial terms
+plot(df_num$danceability, df_num$popularity)
+cor(df_num$danceability, df_num$popularity)
+
+plot(df_num$energy, df_num$popularity)
+cor(df_num$energy, df_num$popularity)
+
+# Non-linear relationship spotted!!
+# try adding polynomial and quandratic terms
+
+fit1 <- lm(data = df_num, popularity ~ danceability + duration_ms + energy + instrumentalness + liveness + loudness + mode + speechiness + time_signature + valence)
+
+fit2 <- lm(data = df_num, popularity ~ danceability + I(danceability^2) +I(danceability^3) + duration_ms + I(duration_ms^2) + energy + I(energy^2) + instrumentalness + I(instrumentalness^2) + liveness + I(liveness^2) + loudness + I(loudness^2) + mode + I(loudness^2) + speechiness + I(speechiness^2) + time_signature + I(time_signature^2) + valence + I(valence^2))
+
+fit3 <- lm(data = df_num, 
+           
+           popularity ~ (danceability + duration_ms + energy + instrumentalness + liveness + loudness + mode + speechiness + time_signature + valence)^2 +  
+             
+             I(danceability^2)  + I(duration_ms^2) +  I(energy^2) +  I(instrumentalness^2) +  I(liveness^2) +  I(loudness^2) +  I(loudness^2) +  I(speechiness^2) +  I(time_signature^2) +  I(valence^2) + 
+             
+              I(danceability^3)  + I(duration_ms^3) +  I(energy^3) +  I(instrumentalness^3) +  I(liveness^3) +  I(loudness^3) +  I(loudness^3) +  I(speechiness^3) +  I(time_signature^3) +  I(valence^3)
+             )
+
+summary(fit1)
+summary(fit2)
+summary(fit3)
+
+$# The model "fit3" performs the best with a R2 value of 0.133.
+# However, the fit3 model contains too many redundant variables.
+# We need to do model selection next.
+
+```
+
+
+
+### Model selection on the full model "fit3"
+
+
+```{r}
+# Stepwise regression model
+#step.model <- stepAIC(fit4, direction = "backward", 
+                    #  trace = FALSE)
+#summary(step.model)
+
+drop1(fit3, test = "F")
+```
+
+```{r}
+drop1(update(fit3, ~. -time_signature:valence -speechiness:time_signature
+             -loudness:mode -danceability:mode), test = "F")
+```
+
+```{r}
+drop1(update(fit3, ~. -time_signature:valence -speechiness:time_signature
+             -loudness:mode -danceability:mode - speechiness:valence
+             -mode:time_signature - loudness:valence - liveness:speechiness 
+             - liveness:loudness - instrumentalness:valence - energy:liveness 
+             - energy:mode - energy:instrumentalness - duration_ms:mode 
+             - danceability:speechiness - danceability:liveness - danceability:instrumentalness
+             -I(danceability^3) -I(danceability^2)), test = "F")
+```
+
+```{r}
+drop1(update(fit3, ~. -time_signature:valence -speechiness:time_signature
+             -loudness:mode -danceability:mode - speechiness:valence
+             -mode:time_signature - loudness:valence - liveness:speechiness 
+             - liveness:loudness - instrumentalness:valence - energy:liveness 
+             - energy:mode - energy:instrumentalness - duration_ms:mode 
+             - danceability:speechiness - danceability:liveness - danceability:instrumentalness
+             -I(danceability^3) -I(danceability^2)- mode:speechiness 
+             -liveness:time_signature  -instrumentalness:time_signature
+             - duration_ms:valence  - duration_ms:time_signature - danceability:time_signature
+             -danceability:duration_ms), test = "F")
+```
+
+```{r}
+drop1( update(fit3, ~. -time_signature:valence -speechiness:time_signature
+             -loudness:mode -danceability:mode - speechiness:valence
+             -mode:time_signature - loudness:valence - liveness:speechiness 
+             - liveness:loudness - instrumentalness:valence - energy:liveness 
+             - energy:mode - energy:instrumentalness - duration_ms:mode 
+             - danceability:speechiness - danceability:liveness - danceability:instrumentalness
+             -I(danceability^3) -I(danceability^2)- mode:speechiness 
+             -liveness:time_signature  -instrumentalness:time_signature
+             - duration_ms:valence  - duration_ms:time_signature - danceability:time_signature
+             -danceability:duration_ms - instrumentalness:mode - duration_ms:speechiness
+             -instrumentalness:liveness - I(duration_ms^3) - I(valence^2)
+             - I(duration_ms^2) ), test = "F")
+```
+
+```{r}
+drop1( update(fit3, ~. -time_signature:valence -speechiness:time_signature
+             -loudness:mode -danceability:mode - speechiness:valence
+             -mode:time_signature - loudness:valence - liveness:speechiness 
+             - liveness:loudness - instrumentalness:valence - energy:liveness 
+             - energy:mode - energy:instrumentalness - duration_ms:mode 
+             - danceability:speechiness - danceability:liveness - danceability:instrumentalness
+             -I(danceability^3) -I(danceability^2)- mode:speechiness 
+             -liveness:time_signature  -instrumentalness:time_signature
+             - duration_ms:valence  - duration_ms:time_signature - danceability:time_signature
+             -danceability:duration_ms - instrumentalness:mode - duration_ms:speechiness
+             -instrumentalness:liveness - I(duration_ms^3) - I(valence^2)
+             - I(duration_ms^2) - liveness:valence  - energy:time_signature ), test = "F")
+```
+
+
+### Final Model
+
+
+```{r}
+fit4 <- lm(data = df_num, popularity ~ danceability + duration_ms + energy + instrumentalness + 
+     loudness +  speechiness + time_signature + 
+    valence + I(energy^2) + I(instrumentalness^2) + I(liveness^2) + 
+    I(loudness^2) + I(speechiness^2) + I(time_signature^2) + 
+    I(energy^3) + I(instrumentalness^3) + I(liveness^3) + I(loudness^3) + 
+    I(speechiness^3) + I(time_signature^3) + I(valence^3) + danceability:energy + 
+    danceability:loudness + danceability:valence + duration_ms:energy + 
+    duration_ms:instrumentalness + duration_ms:liveness + duration_ms:loudness + 
+    energy:loudness + energy:speechiness + energy:valence + instrumentalness:loudness + 
+    instrumentalness:speechiness + liveness:mode + loudness:speechiness + 
+    loudness:time_signature + mode:valence)
+
+summary(fit4)
+```
+
+
+### Final Model Performance on training, validation, and testing set
+
+```{r}
+# create a data frame to store the prediction result
+testresult <- data_frame(model = c("Polynomial Regression", "Regression Tree", "KNN", "Multilayer Perceptron"),
+           AE = 0,
+           MSE = 0,
+           RMSE = 0,
+           RSquare = 0)
+
+```
+
+
+```{r}
+fit_lm <- lm(popularity ~ danceability + duration_ms + energy + instrumentalness + 
+     loudness +  speechiness + time_signature + 
+    valence + I(energy^2) + I(instrumentalness^2) + I(liveness^2) + 
+    I(loudness^2) + I(speechiness^2) + I(time_signature^2) + 
+    I(energy^3) + I(instrumentalness^3) + I(liveness^3) + I(loudness^3) + 
+    I(speechiness^3) + I(time_signature^3) + I(valence^3) + danceability:energy + 
+    danceability:loudness + danceability:valence + duration_ms:energy + 
+    duration_ms:instrumentalness + duration_ms:liveness + duration_ms:loudness + 
+    energy:loudness + energy:speechiness + energy:valence + instrumentalness:loudness + 
+    instrumentalness:speechiness + liveness:mode + loudness:speechiness + 
+    loudness:time_signature + mode:valence, data = dfTraining )
+
+pred_train <- predict.lm(fit_lm, dfTraining[,-14])
+
+# redisual distribution
+hist(dfTraining$popularity - pred_train)
+
+# AE
+mean(dfTraining$popularity - pred_train)
+
+# MSE
+mean((dfTraining$popularity - pred_train) ^ 2)
+
+# RMSE
+sqrt( mean((dfTraining$popularity - pred_train) ^ 2) )
+
+# R2
+rsq <- function (x, y) cor(x, y) ^ 2
+rsq(pred_train, dfTraining$popularity)
+
+
+
+```
+
+```{r}
+# fit the validation dataset
+pred_val <- predict.lm(fit_lm, dfValidation[,-14])
+
+# redisual distribution
+hist(dfValidation$popularity - pred_val)
+
+# AE
+mean(dfValidation$popularity - pred_val)
+
+# MSE
+mean((dfValidation$popularity - pred_val) ^ 2)
+
+# RMSE
+sqrt( mean((dfValidation$popularity - pred_val) ^ 2) )
+
+# R2
+rsq <- function (x, y) cor(x, y) ^ 2
+rsq(pred_val, dfValidation$popularity)
+```
+
+```{r}
+# fit the test dataset
+pred_test <- predict.lm(fit_lm, dfTest[,-14])
+
+# redisual distribution
+hist(dfTest$popularity - pred_test)
+
+# AE
+mean(dfTest$popularity - pred_test)
+
+# MSE
+mean((dfTest$popularity - pred_test) ^ 2)
+
+# RMSE
+sqrt( mean((dfTest$popularity - pred_test) ^ 2) )
+
+# R2
+rsq <- function (x, y) cor(x, y) ^ 2
+rsq(pred_test, dfTest$popularity)
+
+testresult[1, 2] <- mean(dfTest$popularity - pred_test)
+testresult[1, 3] <- mean((dfTest$popularity - pred_test) ^ 2)
+testresult[1, 4] <- sqrt( mean((dfTest$popularity - pred_test) ^ 2) )
+testresult[1, 5] <- rsq(pred_test, dfTest$popularity)
+
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+## 2. Regression Tree
+ 
+### Build a full tree and a pruned tree using library(rpart)
+```{r}
+# grow a full tree tree
+fit_rt <- rpart(popularity ~ acousticness + danceability + duration_ms + energy +
+            instrumentalness + key + liveness + loudness + mode + speechiness +
+            tempo + time_signature + valence,
+            method="anova", 
+            parms = list(split = 'information'), 
+            minsplit = 2, 
+            minbucket = 1,
+            cp=0.001,
+            data=dfTraining)
+
+# plot the full tree
+fancyRpartPlot(fit_rt, caption = NULL)
+
+
+# prune the tree
+fit_prt<- prune(fit_rt, cp=0.0015) # from cptable   
+
+# plot mytree
+fancyRpartPlot(fit_prt, caption = NULL)
+
+```
+
+
+### Performance Evaluation with the full tree
+
+```{r}
+pred_train <- predict(fit_rt, dfTraining[,-14])
+
+# redisual distribution
+hist(dfTraining$popularity - pred_train)
+
+# AE
+mean(dfTraining$popularity - pred_train)
+
+# MSE
+mean((dfTraining$popularity - pred_train) ^ 2)
+
+# RMSE
+sqrt( mean((dfTraining$popularity - pred_train) ^ 2) )
+
+# R2
+rsq <- function (x, y) cor(x, y) ^ 2
+rsq(pred_train, dfTraining$popularity)
+```
+
+```{r}
+# fit the validation dataset
+pred_val <- predict(fit_rt, dfValidation[,-14])
+
+# redisual distribution
+hist(dfValidation$popularity - pred_val)
+
+# AE
+mean(dfValidation$popularity - pred_val)
+
+# MSE
+mean((dfValidation$popularity - pred_val) ^ 2)
+
+# RMSE
+sqrt( mean((dfValidation$popularity - pred_val) ^ 2) )
+
+# R2
+rsq <- function (x, y) cor(x, y) ^ 2
+rsq(pred_val, dfValidation$popularity)
+```
+
+```{r}
+# fit the test dataset
+pred_test <- predict(fit_rt, dfTest[,-14])
+
+# redisual distribution
+hist(dfTest$popularity - pred_test)
+
+# AE
+mean(dfTest$popularity - pred_test)
+
+# MSE
+mean((dfTest$popularity - pred_test) ^ 2)
+
+# RMSE
+sqrt( mean((dfTest$popularity - pred_test) ^ 2) )
+
+# R2
+rsq <- function (x, y) cor(x, y) ^ 2
+rsq(pred_test, dfTest$popularity)
+```
+
+
+### Performance Evaluation with the pruned tree
+
+```{r}
+pred_train <- predict(fit_prt, dfTraining[,-14])
+
+# redisual distribution
+hist(dfTraining$popularity - pred_train)
+
+# AE
+mean(dfTraining$popularity - pred_train)
+
+# MSE
+mean((dfTraining$popularity - pred_train) ^ 2)
+
+# RMSE
+sqrt( mean((dfTraining$popularity - pred_train) ^ 2) )
+
+# R2
+rsq <- function (x, y) cor(x, y) ^ 2
+rsq(pred_train, dfTraining$popularity)
+```
+
+```{r}
+# fit the validation dataset
+pred_val <- predict(fit_prt, dfValidation[,-14])
+
+# redisual distribution
+hist(dfValidation$popularity - pred_val)
+
+# AE
+mean(dfValidation$popularity - pred_val)
+
+# MSE
+mean((dfValidation$popularity - pred_val) ^ 2)
+
+# RMSE
+sqrt( mean((dfValidation$popularity - pred_val) ^ 2) )
+
+# R2
+rsq <- function (x, y) cor(x, y) ^ 2
+rsq(pred_val, dfValidation$popularity)
+```
+
+```{r}
+# fit the test dataset
+pred_test <- predict(fit_prt, dfTest[,-14])
+
+# redisual distribution
+hist(dfTest$popularity - pred_test)
+
+# AE
+mean(dfTest$popularity - pred_test)
+
+# MSE
+mean((dfTest$popularity - pred_test) ^ 2)
+
+# RMSE
+sqrt( mean((dfTest$popularity - pred_test) ^ 2) )
+
+# R2
+rsq <- function (x, y) cor(x, y) ^ 2
+rsq(pred_test, dfTest$popularity)
+
+testresult[2, 2] <- mean(dfTest$popularity - pred_test)
+testresult[2, 3] <- mean((dfTest$popularity - pred_test) ^ 2)
+testresult[2, 4] <- sqrt( mean((dfTest$popularity - pred_test) ^ 2) )
+testresult[2, 5] <- rsq(pred_test, dfTest$popularity)
+
+```
+
+
+
+## 3. KNN
+
+```{r}
+# normalize the data
+df_nnum <- rbind(dfTraining, dfValidation, dfTest)
+normalize <- function(x) return ((x - min(x)) / (max(x) - min(x))) 
+df_nnum <- as.data.frame(lapply(df_nnum[,-14], normalize))
+df_nnum$popularity <- df_num[,14]
+
+dfnTraining <- df_nnum[1:55887, ]
+dfnValidation <- df_nnum[55888:(55888+33531),]
+dfnTest <- df_nnum[(55888+33532):111774,]
+
+
+# fine tune the parameter k
+rsquare <- numeric()
+
+for (i in 1:50) {
+  fit_knn <- knnreg(dfTraining[,-14], dfTraining[,14], k = i)
+  pred <- predict(fit_knn, dfValidation[,-14])
+  rsquare[i]<- rsq(pred, dfValidation[,14])
+}
+
+plot(rsquare)
+
+# pick k = 20
+fit_knn <- knnreg(df_num[,-14], df_num[,14], k = 20)
+
+```
+
+
+```{r}
+# predict the training set
+pred_train <- predict(fit_knn, dfTraining[,-14])
+
+# redisual distribution
+hist(dfTraining$popularity - pred_train)
+
+# AE
+mean(dfTraining$popularity - pred_train)
+
+# MSE
+mean((dfTraining$popularity - pred_train) ^ 2)
+
+# RMSE
+sqrt( mean((dfTraining$popularity - pred_train) ^ 2) )
+
+# R2
+rsq <- function (x, y) cor(x, y) ^ 2
+rsq(pred_train, dfTraining$popularity)
+
+```
+
+```{r}
+# fit the validation dataset
+pred_val <- predict(fit_knn, dfValidation[,-14])
+
+# redisual distribution
+hist(dfValidation$popularity - pred_val)
+
+# AE
+mean(dfValidation$popularity - pred_val)
+
+# MSE
+mean((dfValidation$popularity - pred_val) ^ 2)
+
+# RMSE
+sqrt( mean((dfValidation$popularity - pred_val) ^ 2) )
+
+# R2
+rsq <- function (x, y) cor(x, y) ^ 2
+rsq(pred_val, dfValidation$popularity)
+```
+
+```{r}
+# fit the test dataset
+pred_test <- predict(fit_knn, dfTest[,-14])
+
+# redisual distribution
+hist(dfTest$popularity - pred_test)
+
+# AE
+mean(dfTest$popularity - pred_test)
+
+# MSE
+mean((dfTest$popularity - pred_test) ^ 2)
+
+# RMSE
+sqrt( mean((dfTest$popularity - pred_test) ^ 2) )
+
+# R2
+rsq <- function (x, y) cor(x, y) ^ 2
+rsq(pred_test, dfTest$popularity)
+
+testresult[3, 2] <- mean(dfTest$popularity - pred_test)
+testresult[3, 3] <- mean((dfTest$popularity - pred_test) ^ 2)
+testresult[3, 4] <- sqrt( mean((dfTest$popularity - pred_test) ^ 2) )
+testresult[3, 5] <- rsq(pred_test, dfTest$popularity)
+```
+
+
+## 4. Neural Network
+
+```{r}
+# normalize the data
+df_nnum <- rbind(dfTraining, dfValidation, dfTest)
+normalize <- function(x) return ((x - min(x)) / (max(x) - min(x))) 
+df_nnum <- as.data.frame(lapply(df_nnum[,-14], normalize))
+df_nnum$popularity <- df_num[,14]
+
+dfnTraining <- df_nnum[1:55887, ]
+dfnValidation <- df_nnum[55888:(55888+33531),]
+dfnTest <- df_nnum[(55888+33532):111774,]
+
+```
+
+### Hyper parameter tuning
+
+```{r}
+# tune hyper parameters
+
+r2 <- numeric()
+rmse <- numeric()
+
+temp <- 1
+
+set.seed(12345)
+
+for (i in 10:1){
+  for (j in 1:5){
+      
+      mod<-mlp(dfnTraining[, -14], dfnTraining[, 14], size=c(i,j),linOut=T,
+         learnFuncParams=c(0.1), maxit=50)
+      
+      pred_val <- predict(mod, dfnValidation[, -14])
+      
+      r2[temp] <- rsq(pred_val, dfnValidation$popularity)
+      rmse[temp] <- sqrt( mean((dfnValidation$popularity - pred_val) ^ 2) )
+      
+      temp <- temp +1
+      
+  }
+}
+
+
+mod<-mlp(dfnTraining[, -14], dfnTraining[, 14], size=c(8,4),linOut=T,
+         learnFuncParams=c(0.1), maxit=50)
+par(mar=numeric(4),family='serif')
+plot.nnet(mod)
+
+
+pred_val <- predict(mod, dfnValidation[, -14])
+
+# redisual distribution
+hist(dfnValidation$popularity - pred_val)
+
+# AE
+mean(dfValidation$popularity - pred_val)
+
+# MSE
+mean((dfValidation$popularity - pred_val) ^ 2)
+
+# RMSE
+sqrt( mean((dfValidation$popularity - pred_val) ^ 2) )
+
+# R2
+rsq <- function (x, y) cor(x, y) ^ 2
+rsq(pred_val, dfValidation$popularity)
+
+
+r2
+```
+
+### Fit a  model using the picked parameters
+
+```{r}
+#import the function from Github
+source_url('https://gist.githubusercontent.com/Peque/41a9e20d6687f2f3108d/raw/85e14f3a292e126f1454864427e3a189c2fe33f3/nnet_plot_update.r') 
+
+#neural net with three hidden layers, 10, 5 nodes in each
+set.seed(12345)
+
+mod<-mlp(dfnTraining[, -14], dfnTraining[, 14], size=c(8,4),linOut=T,
+         learnFuncParams=c(0.1), maxit=50)
+par(mar=numeric(4),family='serif')
+plot.nnet(mod)
+
+```
+
+### Performance on validation set
+
+```{r}
+pred_val <- predict(mod, dfnValidation[, -14])
+
+# redisual distribution
+hist(dfnValidation$popularity - pred_val)
+
+# AE
+mean(dfnValidation$popularity - pred_val)
+
+# MSE
+mean((dfnValidation$popularity - pred_val) ^ 2)
+
+# RMSE
+sqrt( mean((dfnValidation$popularity - pred_val) ^ 2) )
+
+# R2
+rsq <- function (x, y) cor(x, y) ^ 2
+rsq(pred_val, dfnValidation$popularity)
+
+```
+
+
+### Performance on test set
+```{r}
+pred_test <- predict(mod, dfnTest[, -14])
+
+# redisual distribution
+hist(dfnTest$popularity - pred_test)
+
+# AE
+mean(dfnTest$popularity - pred_test)
+
+# MSE
+mean((dfnTest$popularity - pred_test) ^ 2)
+
+# RMSE
+sqrt( mean((dfnTest$popularity - pred_test) ^ 2) )
+
+# R2
+rsq <- function (x, y) cor(x, y) ^ 2
+rsq(pred_test, dfnTest$popularity)
+
+testresult[4, 2] <- mean(dfnTest$popularity - pred_test)
+testresult[4, 3] <- mean((dfnTest$popularity - pred_test) ^ 2)
+testresult[4, 4] <- sqrt( mean((dfnTest$popularity - pred_test) ^ 2) )
+testresult[4, 5] <- 0.003146319
+
+```
+
+
+
+```{r}
+testresult
+
+ggplot(df = testresult) +
+  geom_bar(aes(x = reorder(testresult$model, desc(testresult$RSquare)), y = testresult$RSquare,
+               fill = testresult$model), stat = "identity", alpha = 0.5) + 
+  geom_text(aes(x = reorder(testresult$model, desc(testresult$RSquare)), y = testresult$RSquare,
+                label= round(testresult$RSquare,3)), position=position_dodge(width=0.9), vjust=-0.25) +
+  xlab("Model") + ylab("R^2") + 
+  theme_bw() + labs(fill='Model') +
+  ggtitle("R^2 Value on the Test Set")
+  
+ggplot(df = testresult) +
+  geom_bar(aes(x = reorder(testresult$model, desc(testresult$RSquare)), y = testresult$AE,
+               fill = testresult$model), stat = "identity", alpha = 0.5) + 
+  geom_text(aes(x = reorder(testresult$model, desc(testresult$RSquare)), y = testresult$AE,
+               label= round(testresult$AE,3)), position=position_dodge(width=0.9), vjust=-0.25) +
+  xlab("Model") + ylab("AE") + labs(fill='Model') +
+  theme_bw() +
+  ggtitle("Average Error on the Test Set")
+
+ggplot(df = testresult) +
+  geom_bar(aes(x = reorder(testresult$model, desc(testresult$RSquare)), y = testresult$RMSE,
+               fill = testresult$model), stat = "identity", alpha = 0.5) + 
+  geom_text(aes(x = reorder(testresult$model, desc(testresult$RSquare)), y = testresult$RMSE,
+               label= round(testresult$RMSE,3)), position=position_dodge(width=0.9), vjust=-0.25) +
+  xlab("Model") + ylab("RMSE") + labs(fill='Model') +
+  theme_bw() +
+  ggtitle("RMSE on the Test Set")
+
+
+testresult
+
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+# Classification Modeling
+
+## Data Binning and Partition
+
+```{r}
+
+hist(df_num$popularity)
+
+df_num$popcat <- NA
+
+for (i in 1:nrow(df_num)){
+  if (df_num[i,14] <= 20) 
+    df_num[i, 15] <- "low"
+  else if (df_num[i,14] >= 40)
+    df_num[i, 15] <- "high"
+  else
+    df_num[i, 15] <- "medium"
+}
+
+df_num_save <- df_num
+
+df_num <- df_num[,-14]
+
+set.seed(12345)
+
+# Create random training, validation, and test sets
+
+fractionTraining   <- 0.50
+fractionValidation <- 0.30
+fractionTest       <- 0.20
+
+# Compute sample sizes
+sampleSizeTraining   <- floor(fractionTraining   * nrow(df_num))
+sampleSizeValidation <- floor(fractionValidation * nrow(df_num))
+sampleSizeTest       <- floor(fractionTest       * nrow(df_num))
+
+# Create the randomly-sampled indices for the dataframe
+indicesTraining    <- sort(sample(seq_len(nrow(df_num)), size=sampleSizeTraining))
+indicesNotTraining <- setdiff(seq_len(nrow(df_num)), indicesTraining)
+indicesValidation  <- sort(sample(indicesNotTraining, size=sampleSizeValidation))
+indicesTest        <- setdiff(indicesNotTraining, indicesValidation)
+
+# Output the three dataframes for training, validation and test.
+dfTraining   <- df_num[indicesTraining, ]
+dfValidation <- df_num[indicesValidation, ]
+dfTest       <- df_num[indicesTest, ]
+```
+
+## 1. Logistic Regression
+
+```{r}
+dfTraining %>% group_by(popcat) %>% summarize(n())
+```
+
+
+```{r}
+
+dfT <- dfTraining
+
+dfT$popcat <- as.factor(dfT$popcat)
+
+# Setting the basline 
+dfT$popcat <- relevel(dfT$popcat, ref = "low")
+
+glm1 <- multinom(popcat~., data=dfT)
+summary(glm1)
+
+```
+
+```{r}
+
+pred_val <- predict(glm1, dfValidation[, -14], type = "class")
+
+cm = as.matrix(table(Actual = dfValidation[, 14], Predicted = pred_val)) # create the confusion matrix
+cm
+
+n = sum(cm) # number of instances
+nc = nrow(cm) # number of classes
+diag = diag(cm) # number of correctly classified instances per class 
+rowsums = apply(cm, 1, sum) # number of instances per class
+colsums = apply(cm, 2, sum) # number of predictions per class
+p = rowsums / n # distribution of instances over the actual classes
+q = colsums / n # distribution of instances over the predicted classes
+
+accuracy = sum(diag) / n 
+accuracy 
+
+precision = diag / colsums 
+recall = diag / rowsums 
+f1 = 2 * precision * recall / (precision + recall) 
+
+data.frame(precision, recall, f1) 
+
+
+```
+
+```{r}
+
+pred_test <- predict(glm1, dfTest[, -14], type = "class")
+
+cm = as.matrix(table(Actual = dfTest[, 14], Predicted = pred_test)) # create the confusion matrix
+cm
+
+n = sum(cm) # number of instances
+nc = nrow(cm) # number of classes
+diag = diag(cm) # number of correctly classified instances per class 
+rowsums = apply(cm, 1, sum) # number of instances per class
+colsums = apply(cm, 2, sum) # number of predictions per class
+p = rowsums / n # distribution of instances over the actual classes
+q = colsums / n # distribution of instances over the predicted classes
+
+accuracy = sum(diag) / n 
+accuracy 
+
+precision = diag / colsums 
+recall = diag / rowsums 
+f1 = 2 * precision * recall / (precision + recall) 
+
+data.frame(precision, recall, f1) 
+
+
+```
+```
+
+
+
+
+
+
+
